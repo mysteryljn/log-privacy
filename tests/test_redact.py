@@ -39,4 +39,23 @@ class RedactTests(unittest.TestCase):
         self.assertNotIn("GPS", result)
         self.assertNotIn("LaTiTuDe", result)
         self.assertNotIn("LONGITUDE", result)
+
+    def test_can_id_is_normalized_after_key_canonicalization(self):
+        result = redact({
+            "can_id": "0x123",
+            "CAN-ID": "0x456",
+        }, "secret")
+
+        self.assertEqual(result["can_id"], 0x123)
+        self.assertEqual(result["CAN-ID"], 0x456)
+
+    def test_timestamp_alias_cannot_be_overwritten_by_precise_bucket(self):
+        # The alias is intentionally before timestamp_bucket to exercise the
+        # order-dependent overwrite that previously leaked exact timestamps.
+        result = redact({
+            "timeStamp": 1710000123,
+            "timestamp_bucket": 1710000123,
+        }, "secret")
+
+        self.assertEqual(result["timestamp_bucket"], 1710000120)
 if __name__=="__main__": unittest.main()

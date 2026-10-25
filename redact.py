@@ -40,6 +40,11 @@ def _redact_value(value, secret, drop_gps):
     """
     if isinstance(value, dict):
         result = {}
+        # A pre-existing timestamp_bucket must not overwrite a bucket
+        # calculated from any timestamp spelling (for example ``timeStamp``).
+        # Determine this before walking the mapping so the result does not
+        # depend on input key order.
+        has_timestamp = any(_canonical_key(key) == "timestamp" for key in value)
         for key, item in value.items():
             # Keep the existing field names and matching semantics; this
             # fix extends them into nested mappings and lists.
@@ -50,14 +55,18 @@ def _redact_value(value, secret, drop_gps):
                 result[key] = pseudonym(item, secret)
             elif normalized_key == "timestamp":
                 result["timestamp_bucket"] = _bucket_timestamp(item)
-            elif normalized_key == "can_id":
+            # ``_canonical_key`` removes separators, so ``can_id`` becomes
+            # ``canid``.  Comparing against the underscored spelling made
+            # this branch unreachable and left every CAN ID as a string.
+            elif normalized_key == "canid":
                 result[key] = _normalize_can_id(item)
+            elif normalized_key == "timestampbucket" and has_timestamp:
+                # The bucket derived from the timestamp is authoritative;
+                # dropping the input value prevents a precise bucket from
+                # bypassing timestamp coarsening.
+                continue
             else:
                 result[key] = _redact_value(item, secret, drop_gps)
-        # Match the original top-level behavior when an input already has a
-        # timestamp_bucket: the computed bucket always wins.
-        if "timestamp" in value:
-            result["timestamp_bucket"] = _bucket_timestamp(value["timestamp"])
         return result
     if isinstance(value, list):
         return [_redact_value(item, secret, drop_gps) for item in value]
