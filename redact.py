@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import math
+import sys
 from pathlib import Path
 
 
@@ -73,7 +74,17 @@ def _bucket_timestamp(value):
 
 
 def _normalize_can_id(value):
-    return int(value,0) if isinstance(value,str) else value
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        try:
+            return int(value, 0)
+        except (TypeError, ValueError, OverflowError):
+            # Keep one malformed log field from aborting an entire privacy
+            # export.  ``None`` makes the invalid value explicit without
+            # passing the original token through to downstream tooling.
+            return None
+    return value if isinstance(value, int) else None
 
 
 def _redact_value(value, secret, drop_gps):
@@ -123,11 +134,28 @@ def redact(record,secret,drop_gps=True):
 
 
 def process(lines,secret,drop_gps=True):
-    for line in lines:
-        if line.strip(): yield redact(json.loads(line),secret,drop_gps)
+    for line_number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            # A malformed JSONL record must fail closed.  Letting the parser
+            # exception escape produces a traceback and hides which input
+            # record needs repair, while silently skipping it would lose log
+            # evidence without an audit trail.
+            raise ValueError(
+                f"invalid JSON on input line {line_number}: {exc.msg}"
+            ) from exc
+        yield redact(record,secret,drop_gps)
 def main(argv=None):
     p=argparse.ArgumentParser(description="Redact sensitive fields from JSONL vehicle logs"); p.add_argument("input",type=Path); p.add_argument("output",type=Path); p.add_argument("--secret",required=True); p.add_argument("--keep-gps",action="store_true"); a=p.parse_args(argv)
-    with a.output.open("w",encoding="utf-8") as out:
-        for item in process(a.input.read_text(encoding="utf-8").splitlines(),a.secret,not a.keep_gps): out.write(json.dumps(item,ensure_ascii=False)+"\n")
+    try:
+        with a.input.open("r",encoding="utf-8") as source, a.output.open("w",encoding="utf-8") as out:
+            for item in process(source,a.secret,not a.keep_gps):
+                out.write(json.dumps(item,ensure_ascii=False)+"\n")
+    except (OSError, UnicodeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     return 0
 if __name__=="__main__": raise SystemExit(main())

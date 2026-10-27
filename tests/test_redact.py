@@ -1,5 +1,10 @@
+import io
 import unittest
-from redact import redact
+from contextlib import redirect_stderr
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from redact import main, redact
 class RedactTests(unittest.TestCase):
     def test_sensitive_fields(self):
         result=redact({"timestamp":121,"vin":"VIN","gps":{"lat":1},"user_id":"u"},"secret")
@@ -79,6 +84,11 @@ class RedactTests(unittest.TestCase):
         self.assertEqual(result["can_id"], 0x123)
         self.assertEqual(result["CAN-ID"], 0x456)
 
+    def test_invalid_can_id_is_cleared_without_aborting_redaction(self):
+        result = redact({"can_id": "not-a-can-id", "vin": "V"}, "secret")
+        self.assertIsNone(result["can_id"])
+        self.assertTrue(result["vin"].startswith("p_"))
+
     def test_timestamp_alias_cannot_be_overwritten_by_precise_bucket(self):
         # The alias is intentionally before timestamp_bucket to exercise the
         # order-dependent overwrite that previously leaked exact timestamps.
@@ -102,4 +112,25 @@ class RedactTests(unittest.TestCase):
         result = redact({"timestamp": "NaN"}, "s")
 
         self.assertIsNone(result["timestamp_bucket"])
+
+    def test_malformed_jsonl_returns_controlled_error_with_line_number(self):
+        # A single broken record must identify the repair location and return
+        # a CLI error instead of exposing a traceback or silently dropping it.
+        with TemporaryDirectory() as directory:
+            input_path = Path(directory) / "input.jsonl"
+            output_path = Path(directory) / "output.jsonl"
+            input_path.write_text('{"vin":"V"}\n{"vin":\n', encoding="utf-8")
+
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                result = main([
+                    str(input_path),
+                    str(output_path),
+                    "--secret",
+                    "secret",
+                ])
+
+            self.assertEqual(result, 2)
+            self.assertIn("invalid JSON on input line 2", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
 if __name__=="__main__": unittest.main()
