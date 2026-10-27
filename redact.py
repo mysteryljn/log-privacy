@@ -3,14 +3,47 @@ import argparse
 import hashlib
 import hmac
 import json
+import math
 from pathlib import Path
 
 
 # Keys are compared in canonical form so producers can use snake_case,
 # kebab-case, camelCase, or all-uppercase spellings without bypassing
 # redaction.
-_SENSITIVE_KEYS = {"vin", "userid", "driverid"}
-_GPS_KEYS = {"gps", "latitude", "longitude"}
+# Identity-bearing contact fields are also sensitive in shared vehicle logs.
+# The keys are stored in canonical form; ``emailAddress`` and
+# ``phone_number`` therefore match without maintaining spelling variants.
+_SENSITIVE_KEYS = {
+    "vin",
+    "userid",
+    "driverid",
+    "email",
+    "emailaddress",
+    "phone",
+    "phonenumber",
+    "mobile",
+    "mobilephone",
+}
+# Vehicle log producers use both full coordinate names and compact CAN-facing
+# aliases.  Canonicalization below makes these checks case/separator agnostic,
+# so this set contains the canonical forms (for example ``gpsLat`` becomes
+# ``gpslat``).  Missing an alias here would leave a precise coordinate in a
+# supposedly redacted record.
+_GPS_KEYS = {
+    "gps",
+    "latitude",
+    "longitude",
+    "lat",
+    "lon",
+    "lng",
+    "gpslatitude",
+    "gpslongitude",
+    "gpslat",
+    "gpslon",
+    "gpslng",
+    "location",
+    "coordinates",
+}
 
 
 def pseudonym(value,secret):
@@ -24,7 +57,19 @@ def _canonical_key(key):
 
 
 def _bucket_timestamp(value):
-    return int(float(value)//60)*60
+    # Logs can contain a malformed timestamp (or JSON ``null``).  Letting the
+    # conversion exception escape aborts processing of the entire JSONL file,
+    # while copying the original value would defeat timestamp coarsening.  A
+    # null bucket keeps the output schema stable without leaking the input.
+    if isinstance(value, bool):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return int(numeric // 60) * 60
 
 
 def _normalize_can_id(value):

@@ -40,6 +40,36 @@ class RedactTests(unittest.TestCase):
         self.assertNotIn("LaTiTuDe", result)
         self.assertNotIn("LONGITUDE", result)
 
+    def test_compact_coordinate_aliases_are_redacted_recursively(self):
+        # Compact aliases are common in decoded CAN logs and used to bypass
+        # the original latitude/longitude-only filter.
+        result = redact({
+            "lat": 31.2,
+            "lon": 121.5,
+            "events": [{"gpsLat": 31.2, "gpsLon": 121.5, "LNG": 121.5}],
+        }, "secret")
+
+        self.assertNotIn("lat", result)
+        self.assertNotIn("lon", result)
+        self.assertNotIn("gpsLat", result["events"][0])
+        self.assertNotIn("gpsLon", result["events"][0])
+        self.assertNotIn("LNG", result["events"][0])
+
+    def test_contact_pii_aliases_are_pseudonymized_recursively(self):
+        # Contact details are common in driver/session metadata and must not
+        # bypass the existing user/driver identifier rules.
+        result = redact({
+            "session": {
+                "emailAddress": "driver@example.com",
+                "phone_number": "+8613800138000",
+                "events": [{"mobilePhone": "+8613900139000"}],
+            },
+        }, "secret")
+
+        self.assertTrue(result["session"]["emailAddress"].startswith("p_"))
+        self.assertTrue(result["session"]["phone_number"].startswith("p_"))
+        self.assertTrue(result["session"]["events"][0]["mobilePhone"].startswith("p_"))
+
     def test_can_id_is_normalized_after_key_canonicalization(self):
         result = redact({
             "can_id": "0x123",
@@ -58,4 +88,18 @@ class RedactTests(unittest.TestCase):
         }, "secret")
 
         self.assertEqual(result["timestamp_bucket"], 1710000120)
+
+    def test_malformed_timestamp_does_not_abort_redaction(self):
+        # One bad record must not prevent the rest of a JSONL export from
+        # being sanitized, and the original value must not be copied through.
+        result = redact({"timestamp": "not-a-timestamp", "vin": "V"}, "s")
+
+        self.assertIsNone(result["timestamp_bucket"])
+        self.assertNotIn("timestamp", result)
+        self.assertTrue(result["vin"].startswith("p_"))
+
+    def test_non_finite_timestamp_is_not_serialized_as_a_precise_value(self):
+        result = redact({"timestamp": "NaN"}, "s")
+
+        self.assertIsNone(result["timestamp_bucket"])
 if __name__=="__main__": unittest.main()
